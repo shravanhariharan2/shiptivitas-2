@@ -13,7 +13,10 @@ app.get('/', (req, res) => {
 const db = new Database('./clients.db');
 
 // Don't forget to close connection when server gets terminated
-const closeDb = () => db.close();
+const closeDb = () => {
+  db.close();
+  console.log('\nDatabase connection closed');
+}
 process.on('SIGTERM', closeDb);
 process.on('SIGINT', closeDb);
 
@@ -122,14 +125,46 @@ app.put('/api/v1/clients/:id', (req, res) => {
   }
 
   let { status, priority } = req.body;
-  let clients = db.prepare('select * from clients').all();
-  const client = clients.find(client => client.id === id);
+  let client = db.prepare(`SELECT * FROM clients WHERE id == ${id}`).get();
 
-  /* ---------- Update code below ----------*/
+  
+  if(status !== client.status) {
+    // if removing and changing priority, then remove client and reorder old swimlane, then reorder new swimlane before inserting client
+    // remove first
+    db.prepare(`UPDATE clients SET status = "${status}" WHERE id = ${id}`).run();
+    // reorder old swimlane by moving every card lower than client's old priority up by 1 (lower prio by 1)
+    db.prepare(`UPDATE clients SET priority = priority - 1 WHERE status = "${client.status}" AND priority > ${client.priority}`).run();
+    
+    if(priority) {
+      // now, insert element into new swimlane by rearranging all prio's lower than it and then setting prio
+      db.prepare(`UPDATE clients SET priority = priority + 1 WHERE status = "${status}" AND priority >= ${priority}`).run();
+      db.prepare(`UPDATE clients SET priority = ${priority} WHERE id = ${id}`).run();
+    }
+    // if no priority given, simply place as lowest priority
+    else {
+      db.prepare(`UPDATE clients SET status = "${status}", priority = (SELECT COUNT(*) FROM clients WHERE status = "${status}") + 1 WHERE id = ${id}`).run();
+    }
+  }
+  // if not changing statuses but are changing priority, then reorder inside same swimlane
+  else {
+    // move up client if priority less than original
+    if(priority && priority < client.priority) {
+      // move all elements between where client will go and where client is down by 1 in swimlane
+      db.prepare(`UPDATE clients SET priority = priority + 1 WHERE status = "${client.status}" AND priority >= ${priority} AND priority < ${client.priority}`).run();
+      // move client to new priority
+      db.prepare(`UPDATE clients SET priority = ${priority} WHERE id = ${id}`).run();
+    }
+    // move down client if priority more than original
+    else if(priority && priority > client.priority) {
+      // move all elements between where client will go and where client is up by 1 in swimlane
+      db.prepare(`UPDATE clients SET priority = priority - 1 WHERE status = "${client.status}" AND priority > ${client.priority} AND priority <= ${priority}`).run();
+      // move client to new priority
+      db.prepare(`UPDATE clients SET priority = ${priority} WHERE id = ${id}`).run();
+    }
+  }
 
-
-
-  return res.status(200).send(clients);
+  const updatedClients = db.prepare(`SELECT * FROM clients WHERE status = "${status}"`).all();
+  return res.status(200).send(updatedClients);
 });
 
 app.listen(3001);
